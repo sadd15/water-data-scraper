@@ -1,0 +1,78 @@
+name: Run Water Data Scraper # ชื่องาน Workflow ที่จะแสดงบน GitHub
+
+on:
+  schedule:
+    # ทำงานทุกวัน เวลาประมาณ 6:15 AM UTC (ซึ่งประมาณ 13:15 น. เวลาไทย)
+    # ปรับเวลาตามต้องการ (ใช้ Cron syntax)
+    # '15 6 * * *' = นาที 15, ชั่วโมง 6 (UTC), ทุกวัน, ทุกเดือน, ทุกวันในสัปดาห์
+    # ถ้าต้องการ 6:15 เวลาไทย (UTC+7) ต้องตั้งเป็น '15 23 * * *' (23:15 UTC)
+    - cron: '15 23 * * *'
+  workflow_dispatch: # อนุญาตให้กดรันเอง หรือ Trigger จากภายนอก (เช่น Make.com) ได้
+
+jobs:
+  scrape_and_upload:
+    runs-on: ubuntu-latest # ใช้ Runner บน Linux Ubuntu เวอร์ชันล่าสุด
+
+    steps:
+      - name: Checkout repository # ขั้นตอนที่ 1: ดึงโค้ดจาก Repo ลงมา
+        uses: actions/checkout@v4
+
+      - name: Set up Python # ขั้นตอนที่ 2: ติดตั้ง Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # หรือเวอร์ชัน Python ที่เพื่อนใช้ (เช็คได้โดยพิมพ์ python --version ใน Terminal)
+
+      - name: Install Chrome Browser # ขั้นตอนที่ 3: ติดตั้ง Google Chrome (จำเป็นสำหรับ Selenium Headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Dependencies # ขั้นตอนที่ 4: ติดตั้ง Library จาก requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # ตรวจสอบว่า webdriver-manager ติดตั้งและหา chrome เจอไหม (เผื่อ Debug)
+          python -m webdriver_manager chrome --link-path /usr/bin/
+
+      - name: Create credentials.json from Secret # ขั้นตอนที่ 5: สร้างไฟล์ credentials.json
+        run: echo "${{ secrets.GOOGLE_CREDENTIALS_JSON }}" > credentials.json
+        # สำคัญ: ต้องแน่ใจว่า Secret ชื่อ GOOGLE_CREDENTIALS_JSON ถูกสร้างไว้ใน Settings > Secrets and variables > Actions แล้ว
+
+      # --- ขั้นตอนจัดการ Token (เลือกวิธีใดวิธีหนึ่ง หรือยังไม่ทำก็ได้) ---
+      # วิธีที่ 1: ถ้ามี Token เก่าเก็บใน Secret (อาจจะไม่เหมาะถ้า Token หมดอายุบ่อย)
+      #- name: Create token.json from Secret (if exists)
+      #  if: ${{ secrets.GOOGLE_TOKEN_JSON != '' }} # ทำถ้า Secret ไม่ว่าง
+      #  run: echo "${{ secrets.GOOGLE_TOKEN_JSON }}" > token.json
+
+      # วิธีที่ 2: เริ่มต้นด้วยไฟล์ token.json เปล่าๆ (ถ้าต้องการให้ยืนยันตัวตนใหม่เสมอเมื่อ Token หมดอายุ)
+      # ขั้นตอนนี้อาจจะไม่จำเป็น เพราะโค้ด Python จัดการเรื่องนี้ได้
+
+      # --------------------------------------------------------------------
+
+      - name: Run Python Script # ขั้นตอนที่ 6: รันสคริปต์ Python
+        run: python selenium_table_scraper.py # หรือชื่อไฟล์ .py ที่เพื่อนใช้
+
+      # --- ขั้นตอน Update Token Secret (ซับซ้อน - อาจจะยังไม่ทำ) ---
+      # ถ้าต้องการให้ Token ที่ Refresh แล้ว ถูกบันทึกกลับไปเป็น Secret ใหม่
+      # ต้องใช้ Action อื่นๆ ช่วย เช่น https://github.com/marketplace/actions/create-or-update-secret
+      # - name: Update token.json Secret
+      #   if: steps.run_script.outputs.token_updated == 'true' # สมมติว่าสคริปต์มี output บอก
+      #   uses: hmanzur/actions-set-secret@v2
+      #   with:
+      #     name: 'GOOGLE_TOKEN_JSON'
+      #     value: ${{ steps.read_token.outputs.token_content }} # ต้องมี step อ่าน token.json ก่อน
+      #     token: ${{ secrets.GITHUB_TOKEN }} # ใช้ Token ของ GitHub เอง
+      # ------------------------------------------------------------
+
+      - name: Commit and Push potential token.json (ถ้าสร้างใหม่) - ไม่แนะนำสำหรับ Public Repo!
+        # *** คำเตือน: การ Push token.json ขึ้น Repo (แม้จะเป็น Private) ไม่ปลอดภัยเท่าใช้ Secret ***
+        # *** ถ้าต้องการใช้ ควรปรับปรุงให้ใช้ Secret เท่านั้น ***
+        # run: |
+        #   git config --global user.name 'github-actions[bot]'
+        #   git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        #   git add token.json || echo "No token.json to add" # เพิ่มถ้ามีไฟล์ใหม่
+        #   # ตรวจสอบว่ามีอะไรเปลี่ยนแปลงก่อน commit
+        #   git diff --staged --quiet || git commit -m "Update token.json from workflow run"
+        #   # Push เฉพาะถ้ามี commit ใหม่
+        #   git push origin main || echo "No changes to push"
+        continue-on-error: true # ทำต่อแม้จะมี Error ตอน push (เช่น ไม่มีอะไรให้ push)
