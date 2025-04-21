@@ -172,3 +172,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Google OAuth Files
+credentials.json
+token.json
+*.log
+screenshot*.png
