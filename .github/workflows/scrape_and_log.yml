@@ -1,0 +1,63 @@
+name: Scrape Water Data and Log # ชื่อ Workflow
+
+on:
+  schedule:
+    # เวลาไทยประมาณ 6:15 น. (23:15 UTC)
+    - cron: '15 23 * * *'
+  workflow_dispatch: # ให้กดรันเองได้
+
+jobs:
+  build_and_run: # ตั้งชื่อ Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt not found"; fi
+          # ลองติดตั้ง webdriver-manager แยกต่างหาก
+          pip install webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib selenium
+
+      - name: Setup Chrome and ChromeDriver # รวมการติดตั้ง Chrome และ Driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          # ให้ webdriver-manager จัดการ driver path ตอนรัน python แทนการ link path
+          # python -m webdriver_manager chrome --link-path /usr/bin/ || echo "Webdriver manager check/link failed, continuing..."
+
+      - name: Create credentials.json from Secret
+        env:
+          CREDENTIALS_DATA: ${{ secrets.GOOGLE_CREDENTIALS_JSON }} # อ่าน Secret เข้า Environment Variable
+        run: |
+          echo "Checking if GOOGLE_CREDENTIALS_JSON secret is set..."
+          if [ -z "$CREDENTIALS_DATA" ]; then
+            echo "Error: GOOGLE_CREDENTIALS_JSON secret is not set."
+            exit 1
+          fi
+          echo "$CREDENTIALS_DATA" > credentials.json
+          echo "credentials.json created successfully."
+
+      - name: Create token.json from Secret if available
+        env:
+          TOKEN_DATA: ${{ secrets.GOOGLE_TOKEN_JSON }} # อ่าน Secret Token
+        run: |
+          echo "Checking if GOOGLE_TOKEN_JSON secret is set..."
+          if [ ! -z "$TOKEN_DATA" ]; then
+            echo "$TOKEN_DATA" > token.json
+            echo "token.json created from secret."
+          else
+            echo "GOOGLE_TOKEN_JSON secret is not set or empty. Script will attempt authorization."
+            # สร้างไฟล์เปล่าๆ ไว้ก่อน ถ้าไม่มี Secret (เผื่อสคริปต์ต้องการ)
+            touch token.json
+          fi
+
+      - name: Run Python Scraper Script
+        run: python selenium_table_scraper.py # ใช้ชื่อไฟล์ Python ที่เพื่อนใช้จริง
