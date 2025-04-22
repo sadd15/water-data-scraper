@@ -40,9 +40,9 @@ jobs:
 
       # --- ขั้นตอนจัดการ Token (เลือกวิธีใดวิธีหนึ่ง หรือยังไม่ทำก็ได้) ---
       # วิธีที่ 1: ถ้ามี Token เก่าเก็บใน Secret (อาจจะไม่เหมาะถ้า Token หมดอายุบ่อย)
-      #- name: Create token.json from Secret (if exists)
-      #  if: ${{ secrets.GOOGLE_TOKEN_JSON != '' }} # ทำถ้า Secret ไม่ว่าง
-      #  run: echo "${{ secrets.GOOGLE_TOKEN_JSON }}" > token.json
+      - name: Create token.json from Secret (if exists)
+        if: ${{ secrets.GOOGLE_TOKEN_JSON != '' }} # ทำถ้า Secret ไม่ว่าง
+        run: echo "${{ secrets.GOOGLE_TOKEN_JSON }}" > token.json
 
       # วิธีที่ 2: เริ่มต้นด้วยไฟล์ token.json เปล่าๆ (ถ้าต้องการให้ยืนยันตัวตนใหม่เสมอเมื่อ Token หมดอายุ)
       # ขั้นตอนนี้อาจจะไม่จำเป็น เพราะโค้ด Python จัดการเรื่องนี้ได้
