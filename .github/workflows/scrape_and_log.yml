@@ -7,7 +7,7 @@ on:
   workflow_dispatch: # ให้กดรันเองได้
 
 jobs:
-  build_and_run: # ตั้งชื่อ Job
+  build_and_run:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,45 +19,65 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "requirements.txt not found"; fi
-          # ลองติดตั้ง webdriver-manager แยกต่างหาก
-          pip install webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib selenium
-
-      - name: Setup Chrome and ChromeDriver # รวมการติดตั้ง Chrome และ Driver
+      - name: Install Google Chrome # ติดตั้ง Chrome Browser
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
-          # ให้ webdriver-manager จัดการ driver path ตอนรัน python แทนการ link path
-          # python -m webdriver_manager chrome --link-path /usr/bin/ || echo "Webdriver manager check/link failed, continuing..."
+          google-chrome --version # แสดงเวอร์ชัน Chrome ที่ติดตั้ง
+
+      - name: Install Python Dependencies # ติดตั้ง Library Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install webdriver-manager # ตรวจสอบว่าติดตั้งแล้ว
+
+      - name: Download and Link ChromeDriver # <<< แก้ไข Step นี้
+        id: install_driver # ตั้ง ID ให้ Step นี้เผื่ออ้างอิง
+        run: |
+          echo "Attempting to manage ChromeDriver..."
+          # ให้ webdriver-manager ดาวน์โหลด Driver ลง cache ของมันก่อน
+          python -m webdriver_manager chrome --driver_version $(google-chrome --version | cut -d ' ' -f 3)
+          # หา Path ที่ webdriver-manager ดาวน์โหลด Driver มาเก็บไว้
+          CHROME_DRIVER_PATH=$(python -c "from webdriver_manager.chrome import ChromeDriverManager; from selenium.webdriver.chrome.service import Service as ChromeService; print(ChromeDriverManager().install())")
+          echo "ChromeDriver downloaded to: $CHROME_DRIVER_PATH"
+          # ตรวจสอบว่าไฟล์ Driver มีอยู่จริง
+          if [ -f "$CHROME_DRIVER_PATH" ]; then
+            echo "ChromeDriver executable found."
+            # สร้าง Symbolic Link ไปยัง /usr/local/bin เพื่อให้ระบบหาเจอได้ง่าย (อาจจะช่วยเรื่อง Timeout)
+            sudo ln -s "$CHROME_DRIVER_PATH" /usr/local/bin/chromedriver
+            echo "Symbolic link created at /usr/local/bin/chromedriver"
+            # ตั้งค่า Output เพื่อให้ Step อื่นใช้ Path ได้ (ถ้าจำเป็น)
+            echo "driver_path=$CHROME_DRIVER_PATH" >> $GITHUB_OUTPUT
+          else
+            echo "Error: ChromeDriver executable not found at $CHROME_DRIVER_PATH"
+            exit 1
+          fi
+        continue-on-error: false # <<< ตั้งเป็น false ถ้าขั้นตอนนี้สำคัญ ต้องสำเร็จ
 
       - name: Create credentials.json from Secret
         env:
-          CREDENTIALS_DATA: ${{ secrets.GOOGLE_CREDENTIALS_JSON }} # อ่าน Secret เข้า Environment Variable
+          CREDENTIALS_DATA: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
-          echo "Checking if GOOGLE_CREDENTIALS_JSON secret is set..."
-          if [ -z "$CREDENTIALS_DATA" ]; then
-            echo "Error: GOOGLE_CREDENTIALS_JSON secret is not set."
-            exit 1
-          fi
+          echo "Checking credentials secret..."
+          if [ -z "$CREDENTIALS_DATA" ]; then echo "Error: GOOGLE_CREDENTIALS_JSON secret is not set."; exit 1; fi
           echo "$CREDENTIALS_DATA" > credentials.json
-          echo "credentials.json created successfully."
+          echo "credentials.json created."
 
       - name: Create token.json from Secret if available
         env:
-          TOKEN_DATA: ${{ secrets.GOOGLE_TOKEN_JSON }} # อ่าน Secret Token
+          TOKEN_DATA: ${{ secrets.GOOGLE_TOKEN_JSON }}
         run: |
-          echo "Checking if GOOGLE_TOKEN_JSON secret is set..."
+          echo "Checking token secret..."
           if [ ! -z "$TOKEN_DATA" ]; then
             echo "$TOKEN_DATA" > token.json
             echo "token.json created from secret."
           else
-            echo "GOOGLE_TOKEN_JSON secret is not set or empty. Script will attempt authorization."
-            # สร้างไฟล์เปล่าๆ ไว้ก่อน ถ้าไม่มี Secret (เผื่อสคริปต์ต้องการ)
-            touch token.json
+            echo "GOOGLE_TOKEN_JSON secret not set. Script will attempt authorization if needed."
+            touch token.json # สร้างไฟล์เปล่าเผื่อไว้
           fi
 
       - name: Run Python Scraper Script
-        run: python selenium_table_scraper.py # ใช้ชื่อไฟล์ Python ที่เพื่อนใช้จริง
+        run: python selenium_table_scraper.py # ใช้ชื่อไฟล์ Python ที่ถูกต้อง
+        # เพิ่ม Environment Variable เพื่อบอก Python ว่า Driver อยู่ที่ไหน (ถ้าจำเป็น)
+        # env:
+        #   CHROMEDRIVER_PATH: ${{ steps.install_driver.outputs.driver_path }}
