@@ -19,40 +19,63 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Google Chrome # ติดตั้ง Chrome Browser
+      - name: Install Google Chrome
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
-          google-chrome --version # แสดงเวอร์ชัน Chrome ที่ติดตั้ง
+          google-chrome --version
 
-      - name: Install Python Dependencies # ติดตั้ง Library Python
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install webdriver-manager # ตรวจสอบว่าติดตั้งแล้ว
-
-      - name: Download and Link ChromeDriver # <<< แก้ไข Step นี้
-        id: install_driver # ตั้ง ID ให้ Step นี้เผื่ออ้างอิง
-        run: |
-          echo "Attempting to manage ChromeDriver..."
-          # ให้ webdriver-manager ดาวน์โหลด Driver ลง cache ของมันก่อน
-          python -m webdriver_manager chrome --driver_version $(google-chrome --version | cut -d ' ' -f 3)
-          # หา Path ที่ webdriver-manager ดาวน์โหลด Driver มาเก็บไว้
-          CHROME_DRIVER_PATH=$(python -c "from webdriver_manager.chrome import ChromeDriverManager; from selenium.webdriver.chrome.service import Service as ChromeService; print(ChromeDriverManager().install())")
-          echo "ChromeDriver downloaded to: $CHROME_DRIVER_PATH"
-          # ตรวจสอบว่าไฟล์ Driver มีอยู่จริง
-          if [ -f "$CHROME_DRIVER_PATH" ]; then
-            echo "ChromeDriver executable found."
-            # สร้าง Symbolic Link ไปยัง /usr/local/bin เพื่อให้ระบบหาเจอได้ง่าย (อาจจะช่วยเรื่อง Timeout)
-            sudo ln -s "$CHROME_DRIVER_PATH" /usr/local/bin/chromedriver
-            echo "Symbolic link created at /usr/local/bin/chromedriver"
-            # ตั้งค่า Output เพื่อให้ Step อื่นใช้ Path ได้ (ถ้าจำเป็น)
-            echo "driver_path=$CHROME_DRIVER_PATH" >> $GITHUB_OUTPUT
+          # ตรวจสอบว่า requirements.txt มีอยู่จริงก่อนติดตั้ง
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
           else
-            echo "Error: ChromeDriver executable not found at $CHROME_DRIVER_PATH"
+            echo "requirements.txt not found, installing manually..."
+            pip install selenium webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          fi
+          pip list # แสดงรายการ library ที่ติดตั้งแล้ว
+
+      - name: Download and Link ChromeDriver # <<< แก้ไขวิธีเรียก webdriver-manager
+        id: install_driver
+        run: |
+          echo "Attempting to manage ChromeDriver using Python script..."
+          # ใช้ Python เพื่อเรียก webdriver-manager ให้ติดตั้ง Driver
+          # และ Capture path ที่ได้ออกมาใส่ตัวแปร DRIVER_PATH
+          DRIVER_PATH=$(python -c "from webdriver_manager.chrome import ChromeDriverManager; print(ChromeDriverManager().install())")
+          echo "ChromeDriver downloaded/found at: $DRIVER_PATH"
+
+          # ตรวจสอบว่าไฟล์ Driver มีอยู่จริงหรือไม่
+          if [ -f "$DRIVER_PATH" ]; then
+            echo "ChromeDriver executable found."
+            # สร้าง Symbolic Link ไปยัง /usr/local/bin (ใช้ -sf เพื่อ force overwrite ถ้า link มีอยู่แล้ว)
+            sudo ln -sf "$DRIVER_PATH" /usr/local/bin/chromedriver
+            # ตรวจสอบว่า link สร้างสำเร็จ และตั้ง permission (เผื่อจำเป็น)
+            if [ -L /usr/local/bin/chromedriver ]; then
+               echo "Symbolic link created/updated successfully at /usr/local/bin/chromedriver"
+               sudo chmod +x "$DRIVER_PATH" # ให้สิทธิ์ Execute กับตัว Driver เอง
+               sudo chmod +x /usr/local/bin/chromedriver # ให้สิทธิ์ Execute กับตัว Link ด้วย
+            else
+               echo "Error: Failed to create symbolic link."
+               # ลอง copy แทนถ้า link ไม่ได้
+               echo "Attempting to copy ChromeDriver to /usr/local/bin..."
+               sudo cp "$DRIVER_PATH" /usr/local/bin/chromedriver
+               if [ -f /usr/local/bin/chromedriver ]; then
+                  sudo chmod +x /usr/local/bin/chromedriver
+                  echo "Successfully copied ChromeDriver to /usr/local/bin"
+               else
+                  echo "Error: Failed to copy ChromeDriver."
+                  exit 1
+               fi
+            fi
+            # ตั้งค่า Output เพื่อให้ Step อื่นใช้ Path ได้ (เผื่ออนาคต)
+            echo "driver_path=$DRIVER_PATH" >> $GITHUB_OUTPUT
+          else
+            echo "Error: ChromeDriver executable not found at '$DRIVER_PATH' after install attempt."
             exit 1
           fi
-        continue-on-error: false # <<< ตั้งเป็น false ถ้าขั้นตอนนี้สำคัญ ต้องสำเร็จ
+        continue-on-error: false # <<< สำคัญ: ต้องติดตั้ง Driver ให้สำเร็จ
 
       - name: Create credentials.json from Secret
         env:
@@ -77,7 +100,5 @@ jobs:
           fi
 
       - name: Run Python Scraper Script
-        run: python selenium_table_scraper.py # ใช้ชื่อไฟล์ Python ที่ถูกต้อง
-        # เพิ่ม Environment Variable เพื่อบอก Python ว่า Driver อยู่ที่ไหน (ถ้าจำเป็น)
-        # env:
-        #   CHROMEDRIVER_PATH: ${{ steps.install_driver.outputs.driver_path }}
+        run: python selenium_table_scraper.py # <<< ตรวจสอบว่าชื่อไฟล์ Python ถูกต้อง
+        # อาจจะไม่ต้องใช้ env: CHROMEDRIVER_PATH แล้ว เพราะเราสร้าง link ไว้ที่ /usr/local/bin
