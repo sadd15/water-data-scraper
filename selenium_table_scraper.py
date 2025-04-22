@@ -7,8 +7,11 @@ from datetime import datetime, timedelta
 
 # --- Selenium Imports ---
 from selenium import webdriver
-# ... (imports อื่นๆ เหมือนเดิม) ...
-from selenium.webdriver.chrome.service import Service as ChromeService; from selenium.webdriver.common.by import By; from selenium.webdriver.support.ui import WebDriverWait; from selenium.webdriver.support import expected_conditions as EC; from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 try: from webdriver_manager.chrome import ChromeDriverManager; USE_WEBDRIVER_MANAGER = True
 except ImportError: USE_WEBDRIVER_MANAGER = False
 
@@ -19,7 +22,7 @@ try:
     from googleapiclient.errors import HttpError
 except ImportError: exit(1)
 
-# --- Logging Setup (Console Only) ---
+# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s-%(levelname)s-%(message)s', handlers=[logging.StreamHandler()])
 
 # --- ค่าคงที่และ การตั้งค่า ---
@@ -42,6 +45,7 @@ except Exception as e: logging.error(f"Error อ่าน config: {e}"); exit(1)
 TARGET_URL = 'https://hyd-app.rid.go.th/hydro4d.html'; TARGET_ROW_ID = "235"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']; CREDENTIALS_FILE = 'credentials.json'; TOKEN_FILE = 'token.json'
 CHROMEDRIVER_FALLBACK_PATH = os.path.join(script_dir, 'chromedriver.exe'); WAIT_TIME_SECONDS = 60
+PAGE_LOAD_TIMEOUT_SECONDS = 180 # <<< เพิ่มเวลารอโหลดหน้าเว็บเป็น 3 นาที
 
 # --- ฟังก์ชันยืนยันตัวตน Google (ถูกต้องแล้ว) ---
 def authenticate_google_sheets():
@@ -70,12 +74,22 @@ def authenticate_google_sheets():
     except Exception as e: logging.error(f"สร้าง Service Sheets ผิดพลาด: {e}"); return None
 
 
-# --- ฟังก์ชันดึงข้อมูลและจัดรูปแบบ (ถูกต้องแล้ว) ---
+# --- ฟังก์ชันดึงข้อมูลและจัดรูปแบบ (เพิ่ม Timeout และ Options) ---
 def scrape_format_like_web():
-    # ... (โค้ดส่วนนี้เหมือนเดิมเป๊ะ) ...
     logging.info(f"--- เริ่มต้นดึงข้อมูล Selenium (Row ID: {TARGET_ROW_ID}) ---");
-    options = webdriver.ChromeOptions(); options.add_argument('--headless'); options.add_argument('--disable-gpu'); options.add_argument('--window-size=1920x1080')
-    options.add_argument("--log-level=3"); options.add_experimental_option('excludeSwitches', ['enable-logging']); options.add_argument('user-agent=Mozilla/5.0...')
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920x1080')
+    options.add_argument("--log-level=3"); options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36') # ลองเปลี่ยน User Agent ใหม่ๆ
+    # --- เพิ่ม Options สำหรับ Linux/Container ---
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-extensions')
+    options.add_argument("--disable-infobars")
+    # -----------------------------------------
+
     driver = None; service = None
     try: # เปิด Browser
         if USE_WEBDRIVER_MANAGER:
@@ -85,14 +99,22 @@ def scrape_format_like_web():
              if os.path.exists(CHROMEDRIVER_FALLBACK_PATH): service = ChromeService(executable_path=CHROMEDRIVER_FALLBACK_PATH); driver = webdriver.Chrome(service=service, options=options); logging.info("เปิด Chrome (Headless) สำรองสำเร็จ")
              else: raise WebDriverException("ไม่พบ ChromeDriver")
     except Exception as e_init: logging.error(f"Error เริ่มต้น Selenium: {e_init}"); return None
+
     data_for_sheet = []
     try:
-        logging.info(f"กำลังเปิด URL: {TARGET_URL}"); driver.get(TARGET_URL); table_id = "jqGrid"
-        logging.info(f"กำลังรอตาราง ID='{table_id}' และแถว ID='{TARGET_ROW_ID}'...")
+        logging.info(f"กำลังเปิด URL: {TARGET_URL} (Page Load Timeout: {PAGE_LOAD_TIMEOUT_SECONDS} วินาที)...")
+        # --- ตั้งค่า Page Load Timeout ---
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+        # --------------------------------
+        driver.get(TARGET_URL) # <<< ลองโหลดหน้าเว็บ
+        table_id = "jqGrid"
+        logging.info(f"โหลด URL สำเร็จ, กำลังรอตาราง ID='{table_id}' และแถว ID='{TARGET_ROW_ID}'...")
+
         try: # รอ Container และ แถวเป้าหมาย
             WebDriverWait(driver, WAIT_TIME_SECONDS).until( EC.presence_of_element_located((By.ID, "gbox_" + table_id)) ); logging.info("พบ Container")
             target_row_element = WebDriverWait(driver, WAIT_TIME_SECONDS).until( EC.element_to_be_clickable((By.ID, TARGET_ROW_ID)) ); logging.info(f"พบแถว ID='{TARGET_ROW_ID}'")
-        except TimeoutException: logging.error(f"Error: หมดเวลารอ ไม่พบตาราง/แถว ID='{TARGET_ROW_ID}'"); return None
+        except TimeoutException: logging.error(f"Error: หมดเวลารอ ({WAIT_TIME_SECONDS} วิ) ไม่พบตาราง/แถว ID='{TARGET_ROW_ID}' หลังโหลดหน้าเว็บ"); return None
+
         # --- กำหนด Headers ---
         today = datetime.now(); date_q_values = []
         thai_month_abbr = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]; thai_day_abbr = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."]
@@ -115,122 +137,73 @@ def scrape_format_like_web():
                 data_for_sheet.append(row_top); data_for_sheet.append(row_bottom); logging.info("จัดรูปแบบข้อมูลคล้ายหน้าเว็บสำเร็จ")
             else: logging.warning(f"ดึงข้อมูลดิบได้ {len(raw_cols)} ไม่ครบ 17"); return None
         except Exception as row_err: logging.error(f"เกิดปัญหาดึง/จัดรูปแบบแถว ID='{TARGET_ROW_ID}': {row_err}"); return None
+
+    # --- จัดการ Error ตอนโหลดหน้าเว็บ ---
+    except TimeoutException as page_load_timeout:
+         logging.error(f"Error: หมดเวลา ({PAGE_LOAD_TIMEOUT_SECONDS} วินาที) ในการโหลด URL: {TARGET_URL}")
+         try: driver.save_screenshot(os.path.join(script_dir,f"screenshot_pageload_timeout.png")); logging.info("บันทึก screenshot...")
+         except Exception: pass
+         data_for_sheet = None # คืนค่า None ถ้าโหลดหน้าเว็บ Timeout
+    # --- จัดการ Error อื่นๆ และ ปิด Browser ---
     except Exception as e_scrape: logging.error(f"เกิดข้อผิดพลาดระหว่างดึงข้อมูล: {e_scrape}"); import traceback; traceback.print_exc(); data_for_sheet = None
     finally:
         if driver:
             try: driver.quit(); logging.info("ปิด Chrome Browser (Headless) แล้ว")
             except Exception as e_quit: logging.error(f"เกิดปัญหาปิด Browser: {e_quit}")
-    return data_for_sheet if len(data_for_sheet) == 4 else None
+    return data_for_sheet if data_for_sheet and len(data_for_sheet) == 4 else None # ตรวจสอบให้ดีขึ้นก่อนคืนค่า
 
 
-# --- ฟังก์ชันเขียนทับชีตล่าสุด (กลับไปใช้ USER_ENTERED) ---
+# --- ฟังก์ชันเขียนทับชีตล่าสุด (ใช้ USER_ENTERED) ---
 def update_latest_sheet(service, data_to_write):
-    sheet_name = SHEET_NAME_LATEST
-    logging.info(f"--- เริ่มต้นอัปเดตชีตล่าสุด '{sheet_name}' ---")
+    # ... (โค้ดส่วนนี้เหมือนเดิมเป๊ะ) ...
+    sheet_name = SHEET_NAME_LATEST; logging.info(f"--- เริ่มต้นอัปเดตชีตล่าสุด '{sheet_name}' ---")
     if not service: logging.error("ไม่มี Service"); return False
-    if not data_to_write or len(data_to_write) < 2: logging.error("ไม่มีข้อมูลเขียน"); return False
-    num_headers = 2; num_data_rows = len(data_to_write) - num_headers
+    if not data_to_write or len(data_to_write) != 4: logging.error("ข้อมูลเขียนชีตล่าสุดไม่ถูกต้อง"); return False
+    num_headers = 2; num_data_rows = 2; data_with_timestamp = [row[:] for row in data_to_write]
     try:
         logging.info(f"กำลังล้างชีต '{sheet_name}'..."); clear_range = f"{sheet_name}!A1:Z"
         service.spreadsheets().values().clear(spreadsheetId=SPREADSHEET_ID, range=clear_range).execute(); logging.info("ล้างชีตสำเร็จ")
         run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S'); timestamp_header = "วันที่ดึงข้อมูล"
-        # เพิ่ม Timestamp ให้ Header และ Data Rows
-        if data_to_write[0] and timestamp_header not in data_to_write[0][-1:]: data_to_write[0].append(timestamp_header)
-        if len(data_to_write) > 1 and len(data_to_write[1]) < len(data_to_write[0]): data_to_write[1].append("")
-        last_data_row_index = num_headers + num_data_rows -1
-        if last_data_row_index >= num_headers and isinstance(data_to_write[last_data_row_index], list):
-             while len(data_to_write[2]) < len(data_to_write[0]) : data_to_write[2].append('') # เติมแถวบนด้วยค่าว่าง
-             while len(data_to_write[last_data_row_index]) < len(data_to_write[0]) -1: data_to_write[last_data_row_index].append('')
-             data_to_write[last_data_row_index].append(run_timestamp)
-
-        write_range = f"{sheet_name}!A1"; body = {'values': data_to_write}
-        logging.info(f"กำลังเขียน {len(data_to_write)} แถว ลงชีต '{sheet_name}' (valueInputOption=USER_ENTERED)...") # แจ้งว่าใช้ USER_ENTERED
-        result = service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID, range=write_range,
-            valueInputOption='USER_ENTERED', # <<< กลับไปใช้ USER_ENTERED
-            body=body
-        ).execute()
+        if timestamp_header not in data_with_timestamp[0]: data_with_timestamp[0].append(timestamp_header)
+        if len(data_with_timestamp[1]) < len(data_with_timestamp[0]): data_with_timestamp[1].append("")
+        while len(data_with_timestamp[2]) < len(data_with_timestamp[0]): data_with_timestamp[2].append("")
+        while len(data_with_timestamp[3]) < len(data_with_timestamp[0]) - 1: data_with_timestamp[3].append("")
+        data_with_timestamp[3].append(run_timestamp)
+        write_range = f"{sheet_name}!A1"; body = {'values': data_with_timestamp}
+        logging.info(f"กำลังเขียน {len(data_with_timestamp)} แถว ลงชีต '{sheet_name}' (valueInputOption=USER_ENTERED)...")
+        result = service.spreadsheets().values().update(spreadsheetId=SPREADSHEET_ID, range=write_range, valueInputOption='USER_ENTERED', body=body).execute()
         updated_cells = result.get('updatedCells', 'N/A'); logging.info(f"เขียนลงชีต '{sheet_name}' สำเร็จ! เซลล์ที่อัปเดต: {updated_cells}")
         return True
     except HttpError as error: logging.error(f"เกิด HttpError ตอนเขียนชีต '{sheet_name}': {error}"); return False
     except Exception as e: logging.error(f"เกิดข้อผิดพลาดตอนเขียนชีต '{sheet_name}': {e}"); import traceback; traceback.print_exc(); return False
 
-# --- ฟังก์ชันเขียนต่อท้ายชีต Log (ย้ายคอลัมน์วันที่ Format DD/MM/YYYY ไปก่อน Timestamp) ---
+
+# --- ฟังก์ชันเขียนต่อท้ายชีต Log (ใช้ RAW และ Header Format DD/MM/YYYY ที่ถูกต้อง) ---
 def append_data_to_log_sheet(service, full_data):
-    """เขียนข้อมูลเฉพาะวันล่าสุด (Q1) ต่อท้ายในชีต Log พร้อม Format วันที่ DD/MM/YYYY แทรกก่อน Timestamp"""
-    sheet_name = SHEET_NAME_LOG
-    logging.info(f"--- เริ่มต้นเขียนข้อมูลล่าสุดต่อท้ายชีต Log '{sheet_name}' ---")
+    # ... (โค้ดส่วนนี้เหมือนเดิมเป๊ะ) ...
+    sheet_name = SHEET_NAME_LOG; logging.info(f"--- เริ่มต้นเขียนข้อมูลล่าสุดต่อท้ายชีต Log '{sheet_name}' ---")
     if not service: logging.error("ไม่มี Service object"); return False
     if not full_data or len(full_data) != 4: logging.error("ข้อมูล Input Log ไม่ถูกต้อง"); return False
     try:
-        # --- สร้าง Header สำหรับ Log Sheet (ย้ายคอลัมน์วันที่ไปท้าย) ---
-        today = datetime.now()
-        formatted_date = today.strftime('%d/%m/%Y') # รูปแบบ วว/ดด/ปปปป
-        timestamp_header = "วันที่ดึงข้อมูล"
-
-        # Header แถวแรก: ข้อมูลพื้นฐาน + หัวข้อข้อมูลวันล่าสุด + สถานะ + *** วันที่ Formatted ***
-        log_header_top = ["ลำดับ", "สถานี", "ลุ่มน้ำ", "อำเภอ", "จังหวัด",
-                          "ระดับตลิ่ง(ม.)", f"ระดับน้ำ ", # บังคับ Text
-                          "ร้อยละความจุ(%)", "สถานะ/แนวโน้ม",
-                          f"วันที่รายงานน้ำ "] # <<< ย้ายมาอยู่ก่อน Timestamp Header
-        # Header แถวล่าง: เว้นว่างช่องข้อมูลพื้นฐาน + หัวข้อปริมาณน้ำวันล่าสุด + เว้นว่าง + *** เว้นว่างสำหรับวันที่ ***
-        log_header_bottom = ["", "", "", "", "",
-                             "ความจุลำน้ำ(ลบ.ม./วินาที)", f"ปริมาณน้ำ ", # บังคับ Text
-                             "", "", ""] # <<< ตำแหน่งวันที่ว่าง, ร้อยละว่าง, สถานะว่าง
-
-        headers_for_log = [log_header_top, log_header_bottom]
-
-        # --- เตรียมข้อมูลแถว Log (2 แถว จากข้อมูล Q1) ---
-        data_row_top = full_data[2]; data_row_bottom = full_data[3]
+        today = datetime.now(); formatted_date = today.strftime('%d/%m/%Y'); timestamp_header = "วันที่ดึงข้อมูล"
+        log_header_top = ["ลำดับ", "สถานี", "ลุ่มน้ำ", "อำเภอ", "จังหวัด","ระดับตลิ่ง(ม.)", f"ระดับน้ำ ('{formatted_date})", f"วันที่ ({formatted_date})", "ร้อยละความจุ(%)", "สถานะ/แนวโน้ม", timestamp_header]
+        log_header_bottom = ["", "", "", "", "", "ความจุลำน้ำ(ลบ.ม./วินาที)", f"ปริมาณน้ำ ('{formatted_date})", "", "", "", ""]
+        headers_for_log = [log_header_top, log_header_bottom]; data_row_top = full_data[2]; data_row_bottom = full_data[3]
         log_row_top = []; log_row_bottom = []
-        # ข้อมูลพื้นฐาน (index 0-4) + ระดับตลิ่ง (index 5 บน)
         for i in range(6): log_row_top.append(data_row_top[i]); log_row_bottom.append(data_row_bottom[i])
-        # ข้อมูล Q1 (index 12 ในข้อมูลดิบ)
-        q1_val_parts_top = data_row_top[12].split(); log_row_top.append(q1_val_parts_top[0] if len(q1_val_parts_top) > 0 else "N/A") # ระดับน้ำ Q1
-        q1_val_parts_bottom = data_row_bottom[12].split(); log_row_bottom.append(q1_val_parts_bottom[0] if len(q1_val_parts_bottom) > 0 else "N/A") # ปริมาณน้ำ Q1
-        # ข้อมูลท้าย (index 15, 16 ในข้อมูลดิบ)
+        q1_val_parts_top = data_row_top[12].split(); log_row_top.append(q1_val_parts_top[0] if len(q1_val_parts_top) > 0 else "N/A")
+        q1_val_parts_bottom = data_row_bottom[12].split(); log_row_bottom.append(q1_val_parts_bottom[0] if len(q1_val_parts_bottom) > 0 else "N/A")
+        log_row_top.append(formatted_date); log_row_bottom.append("") # วันที่ วว/ดด/ปปปป
         log_row_top.append(data_row_top[15]); log_row_top.append(data_row_top[16]); log_row_bottom.append(""); log_row_bottom.append("")
-
-        # *** เพิ่มข้อมูลวันที่ (formatted_date) ต่อท้ายแถวบน ***
-        log_row_top.append(formatted_date)
-        # *** เพิ่มค่าว่างต่อท้ายแถวล่าง ให้ตรงคอลัมน์วันที่ ***
-        log_row_bottom.append("")
-
-
-        # --- รวม Header (ถ้าชีตว่าง) และ Data สำหรับ Append ---
-        data_to_append_to_log = []
-        check_range = f"{sheet_name}!A1"; result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=check_range).execute(); existing_values = result.get('values', [])
-        if not existing_values:
-            logging.info(f"ชีต '{sheet_name}' ว่าง, เขียน Header ด้วย")
-            # เพิ่ม Header "วันที่ดึงข้อมูล" ต่อท้าย headers_for_log[0]
-            if timestamp_header not in headers_for_log[0]: headers_for_log[0].append(timestamp_header)
-            # ทำให้ header แถวสองยาวเท่ากันด้วย (ถ้ามี)
-            while len(headers_for_log[1]) < len(headers_for_log[0]): headers_for_log[1].append("")
-            data_to_append_to_log.extend(headers_for_log)
-        else:
-             logging.info(f"ชีต '{sheet_name}' มีข้อมูลแล้ว, เขียนเฉพาะข้อมูลใหม่")
-
-        # --- เพิ่ม Timestamp ให้ข้อมูล ---
+        data_to_append_to_log = []; check_range = f"{sheet_name}!A1"; result = service.spreadsheets().values().get(spreadsheetId=SPREADSHEET_ID, range=check_range).execute(); existing_values = result.get('values', [])
         run_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S');
-        # หาจำนวนคอลัมน์สุดท้ายจาก Header (แถวแรกที่สมบูรณ์ถ้ามี Header, หรือจาก log_header_top ถ้าไม่มี)
-        num_final_headers = len(data_to_append_to_log[0]) if data_to_append_to_log and data_to_append_to_log[0] else len(log_header_top) + 1
-
-        # เติมค่าว่างให้แถวข้อมูลบน จนถึงก่อนคอลัมน์ Timestamp
-        while len(log_row_top) < num_final_headers -1 : log_row_top.append('')
-        # เพิ่มค่าว่างในคอลัมน์ Timestamp ของแถวบน
-        log_row_top.append("")
-
-        # เติมค่าว่างให้แถวข้อมูลล่าง จนถึงก่อนคอลัมน์ Timestamp
+        if not existing_values: logging.info(f"ชีต '{sheet_name}' ว่าง, เขียน Header"); data_to_append_to_log.extend(headers_for_log)
+        else: logging.info(f"ชีต '{sheet_name}' มีข้อมูลแล้ว, เขียนเฉพาะข้อมูลใหม่")
+        num_final_headers = len(log_header_top)
+        while len(log_row_top) < num_final_headers : log_row_top.append('')
         while len(log_row_bottom) < num_final_headers -1 : log_row_bottom.append('')
-        # เพิ่ม Timestamp จริงในแถวล่าง
         log_row_bottom.append(run_timestamp)
-
-        # เพิ่มแถวข้อมูลที่เตรียมแล้วลง List ที่จะ Append
-        data_to_append_to_log.append(log_row_top)
-        data_to_append_to_log.append(log_row_bottom)
-
-
-        # --- เขียนข้อมูลต่อท้าย ---
+        data_to_append_to_log.append(log_row_top); data_to_append_to_log.append(log_row_bottom)
         append_range = f"{sheet_name}!A1"; body = {'values': data_to_append_to_log }
         logging.info(f"กำลังเขียน {len(data_to_append_to_log)} แถวใหม่ ต่อท้ายชีต '{sheet_name}' (valueInputOption=RAW)...")
         result = service.spreadsheets().values().append(spreadsheetId=SPREADSHEET_ID, range=append_range, valueInputOption='RAW', insertDataOption='INSERT_ROWS', body=body).execute()
@@ -242,13 +215,15 @@ def append_data_to_log_sheet(service, full_data):
 # --- ส่วนหลักในการรันสคริปต์ ---
 if __name__ == '__main__':
     start_time = time.time()
-    logging.info(f"--- Script Start: Selenium Scrape & Log (Row ID {TARGET_ROW_ID} - USER_ENTERED for Latest) ---") # อัปเดตชื่อ Log
+    logging.info(f"--- Script Start: Selenium Scrape & Log (Row ID {TARGET_ROW_ID} - Added Timeout & Options) ---") # อัปเดตชื่อ Log
     sheet_service = authenticate_google_sheets()
     if sheet_service:
         formatted_data = scrape_format_like_web()
-        if formatted_data:
-            update_latest_sheet(service=sheet_service, data_to_write=[row[:] for row in formatted_data]) # ใช้ USER_ENTERED
-            append_data_to_log_sheet(service=sheet_service, full_data=formatted_data) # ใช้ RAW
+        # --- แก้ไขการตรวจสอบ formatted_data ---
+        if formatted_data: # ตรวจสอบแค่ว่าไม่เป็น None (เพราะ scrape_format_like_web คืน None ถ้า Error)
+            update_latest_sheet(service=sheet_service, data_to_write=[row[:] for row in formatted_data])
+            append_data_to_log_sheet(service=sheet_service, full_data=formatted_data)
+        # ------------------------------------
         else: logging.warning(f"ไม่สามารถดึง/จัดรูปแบบข้อมูลจากแถว ID='{TARGET_ROW_ID}' ได้")
     else: logging.error("ไม่สามารถเชื่อมต่อ Google Sheets API ได้")
     end_time = time.time()
